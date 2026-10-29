@@ -1,0 +1,42 @@
+# Local configuration and secrets: never commit.
+.env
+.env.*
+!.env.example
+*.local
+deploy/.env
+deploy/secrets/
+*.pem
+*.key
+*.p12
+*.crt
+
+# Local data and generated output.
+*.dump
+deploy/backups/
+deploy/loadtest-results/
+.DS_Store
+deploy/acme/
+*.tsbuildinfo
+
+# Personal / learning notes — not part of the project.
+teach/
+
+# Dependencies.
+node_modules/
+
+# Build output.
+dist/
+
+# Test artifacts.
+test-results/
+playwright-report/
+
+# IDE / editor config.
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files.
+Thumbs.db

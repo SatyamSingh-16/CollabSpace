@@ -1,0 +1,22 @@
+# Build contexts must never contain secrets or local state. Everything below
+# is excluded from every image built from this repository.
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/secrets
+**/*.pem
+**/*.key
+**/*.dump
+.git
+.github
+teach
+docs
+frontend/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+**/.DS_Store
+deploy/loadtest-results
+deploy/backups
+deploy/acme

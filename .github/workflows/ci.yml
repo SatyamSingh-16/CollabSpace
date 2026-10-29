@@ -1,0 +1,175 @@
+# CollabSpace CI: formatting, vet, Go tests under the race detector,
+# frontend typecheck/build/tests, real-browser tests, and a deployment
+# smoke test of the Docker images behind Nginx/TLS.
+#
+# Every database here is a throwaway service container named
+# collabspace_test; the tests refuse any database whose name lacks "test"
+# (internal/testdb). No secrets are used or printed. The Postgres password
+# below protects a container that exists only for the job.
+#
+# Third-party actions are pinned to full commit SHAs (resolved with
+# `git ls-remote` against GitHub; the comment names the tag). Tool images
+# are pinned by digest. To update, resolve the new tag's SHA the same way.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COLLABSPACE_TEST_DATABASE_URL: postgres://ci:ci@localhost:5432/collabspace_test?sslmode=disable
+
+jobs:
+  go:
+    name: Go (fmt, vet, race tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: collabspace_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d collabspace_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true # keyed by go.sum; holds only public modules
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "not gofmt-formatted:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test -race
+        run: go test -race -count=1 -v ./... 2>&1 | tee go-test.log
+      - name: Database tests really ran
+        # Without the database URL they skip and still print "ok".
+        run: |
+          if grep -q -- '--- SKIP' go-test.log; then echo "tests were skipped"; exit 1; fi
+          echo "passed: $(grep -c '^--- PASS: Test' go-test.log)"
+
+  frontend:
+    name: Frontend (typecheck, build, Vitest, Playwright)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: collabspace_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ci -d collabspace_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 (e2e and browser tests build cmd/server)
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 26.11.1
+          cache: npm # caches the npm download cache, keyed by the lockfile; not node_modules
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install (exactly the lockfile)
+        run: npm ci --no-audit --no-fund
+      - name: Typecheck and production build
+        run: npm run build
+      - name: Vitest (unit + end-to-end against the real server)
+        # The end-to-end suite skips itself without the database URL; a
+        # skipped suite must fail CI, not pass silently.
+        run: |
+          npx vitest run 2>&1 | tee vitest.log
+          if grep -qiE '[0-9]+ skipped' vitest.log; then echo "Vitest skipped tests"; exit 1; fi
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Playwright (Chromium)
+        run: |
+          npx playwright test 2>&1 | tee playwright.log
+          if grep -qiE '[0-9]+ skipped' playwright.log; then echo "Playwright skipped tests"; exit 1; fi
+      - name: Keep traces of failed browser tests
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-results
+          path: frontend/test-results
+          retention-days: 7
+
+  lint:
+    name: Lint (workflow, shell scripts, Dockerfiles)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: actionlint (also runs ShellCheck on run scripts)
+        run: docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color .github/workflows/ci.yml
+      - name: ShellCheck deploy scripts
+        run: docker run --rm -v "$PWD":/repo -w /repo --entrypoint shellcheck rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 deploy/*.sh
+      - name: hadolint Dockerfiles
+        run: |
+          for f in deploy/*.Dockerfile; do
+            echo "$f"
+            docker run --rm -i hadolint/hadolint@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d hadolint --failure-threshold warning - < "$f"
+          done
+
+  deploy-smoke:
+    name: Docker images + Nginx/TLS smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Throwaway secrets and a local CA certificate
+        run: |
+          cp deploy/env.example deploy/.env
+          deploy/gen-secrets.sh
+          deploy/gen-local-cert.sh
+      - name: Validate the Compose configuration
+        run: docker compose -f deploy/compose.yaml config --quiet
+      - name: Build and start (waits for health checks)
+        run: docker compose -f deploy/compose.yaml up -d --build --wait --wait-timeout 180
+      - name: Scan our images (fail on fixable HIGH/CRITICAL)
+        # postgres:17.x-alpine is upstream and has known findings in gosu
+        # (docs/deployment.md); only the images built here are gated.
+        run: |
+          for img in collabspace-app:local collabspace-proxy:local; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c \
+              image --quiet --ignore-unfixed --severity HIGH,CRITICAL --exit-code 1 "$img"
+          done
+      - name: Smoke test through Nginx
+        run: deploy/smoke.sh
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f deploy/compose.yaml logs --no-color
+      - name: Remove the stack and its throwaway volume
+        if: always()
+        run: docker compose -f deploy/compose.yaml down -v

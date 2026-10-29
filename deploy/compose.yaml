@@ -1,0 +1,143 @@
+# CollabSpace, single instance: PostgreSQL, a one-shot migration job, the Go
+# server and Nginx (TLS, static frontend, reverse proxy).
+#
+#   cp deploy/env.example deploy/.env      # then edit it
+#   deploy/gen-secrets.sh                   # database password + URL files
+#   deploy/gen-local-cert.sh                # local TLS only; see docs/operations.md
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# Data lives in the named volume "pgdata". Never run `down -v` unless you
+# mean to delete the database (take a backup first: deploy/backup.sh).
+
+name: collabspace
+
+services:
+  db:
+    # Exact minor version: an upgrade is then a deliberate change (pull,
+    # back up, recreate). Minor versions within 17 share the data format.
+    image: postgres:17.11-alpine
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_USER: collabspace
+      POSTGRES_DB: collabspace
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    # No "ports:": PostgreSQL is reachable only on the internal network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collabspace -d collabspace"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Applies pending migrations once, then exits. The app starts only if this
+  # succeeded. A PostgreSQL advisory lock serialises concurrent runs. It
+  # never migrates down and never drops anything.
+  migrate:
+    build: { context: .., dockerfile: deploy/app.Dockerfile }
+    image: collabspace-app:local
+    entrypoint: ["/usr/local/bin/admin", "migrate"]
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets: [database_url]
+    networks: [backend]
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  app:
+    image: collabspace-app:local
+    environment:
+      DATABASE_URL_FILE: /run/secrets/database_url
+      HTTP_ADDR: ":8080"
+      ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN in deploy/.env, e.g. https://localhost:8443}
+      COOKIE_SECURE: "true"
+      # Safe only because Nginx overwrites X-Real-IP and is the only thing
+      # that can reach this container (no published ports).
+      TRUSTED_PROXY_IP_HEADER: X-Real-IP
+      MIGRATE_ON_START: "false"
+      SHUTDOWN_TIMEOUT: 20s
+      LOG_FORMAT: json
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      STATS_LOG_INTERVAL: ${STATS_LOG_INTERVAL:-5m}
+      RATE_LIMIT_LOGIN_PER_IP: ${RATE_LIMIT_LOGIN_PER_IP:-30/10m}
+      RATE_LIMIT_LOGIN_PER_ACCOUNT_IP: ${RATE_LIMIT_LOGIN_PER_ACCOUNT_IP:-10/10m}
+      RATE_LIMIT_LOGIN_PER_ACCOUNT: ${RATE_LIMIT_LOGIN_PER_ACCOUNT:-50/10m}
+      RATE_LIMIT_REGISTER_PER_IP: ${RATE_LIMIT_REGISTER_PER_IP:-10/1h}
+      RATE_LIMIT_SHARE_PER_USER: ${RATE_LIMIT_SHARE_PER_USER:-30/10m}
+    secrets: [database_url]
+    networks: [backend, edge]
+    # The server writes nothing to disk and needs no Linux capabilities.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      db: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]   # GET /readyz: process up AND database answering
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    # SIGTERM → the server closes WebSockets with 1001 within SHUTDOWN_TIMEOUT
+    # (20s); Docker waits this long before SIGKILL.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  proxy:
+    build: { context: .., dockerfile: deploy/proxy.Dockerfile }
+    image: collabspace-proxy:local
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-localhost}
+      PUBLIC_HTTPS_PORT_SUFFIX: ${PUBLIC_HTTPS_PORT_SUFFIX-:8443}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-}
+      # Per-address limit on /api/auth/login|register at the proxy.
+      AUTH_RATE_LIMIT: ${AUTH_RATE_LIMIT:-5r/s}
+    ports:
+      # 127.0.0.1 by default: reachable from this machine only. Set
+      # BIND_ADDR=0.0.0.0 (and 80/443) on a real server.
+      - "${BIND_ADDR:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+      - "${BIND_ADDR:-127.0.0.1}:${HTTPS_PORT:-8443}:8443"
+    volumes:
+      # Certificate and private key, read-only, from the host. For Let's
+      # Encrypt this is the directory certbot-deploy-hook.sh writes, NOT
+      # /etc/letsencrypt/live/<domain> (its symlinks dangle when mounted).
+      - ${TLS_DIR:-./secrets/tls}:/etc/nginx/tls:ro
+      # certbot --webroot writes HTTP-01 challenge files here on the host.
+      - ${ACME_WEBROOT:-./acme}:/var/www/acme:ro
+    networks: [edge]
+    # Ports 8080/8443 need no capability; nothing gains privileges.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      app: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/nginx-health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    # SIGQUIT: Nginx stops accepting, then waits up to worker_shutdown_timeout
+    # (10s) for open connections (WebSockets) before closing them.
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+networks:
+  # internal: no route to or from outside Docker. Only db, migrate and app.
+  backend:
+    internal: true
+  edge: {}
+
+volumes:
+  pgdata: {}
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+  database_url:
+    file: ./secrets/database_url

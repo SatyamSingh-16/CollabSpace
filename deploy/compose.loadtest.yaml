@@ -1,0 +1,21 @@
+# LOCAL LOAD TESTS ONLY. Layered on top of compose.yaml:
+#   docker compose -f deploy/compose.yaml -f deploy/compose.loadtest.yaml up -d
+#
+# A load-test run registers hundreds of fresh users and shares documents
+# with them from one address (and behind Docker Desktop every client shares
+# one address anyway). This override lifts the registration, login and
+# sharing limits and the proxy's auth limit so setup isn't throttled. Never
+# use it for a deployment that real users can reach. Bring the normal stack
+# back with: docker compose -f deploy/compose.yaml up -d
+services:
+  app:
+    environment:
+      RATE_LIMIT_REGISTER_PER_IP: "off"
+      RATE_LIMIT_LOGIN_PER_IP: "off"
+      RATE_LIMIT_LOGIN_PER_ACCOUNT_IP: "off"
+      RATE_LIMIT_LOGIN_PER_ACCOUNT: "off"
+      RATE_LIMIT_SHARE_PER_USER: "off"
+      STATS_LOG_INTERVAL: 10s
+  proxy:
+    environment:
+      AUTH_RATE_LIMIT: 1000r/s
