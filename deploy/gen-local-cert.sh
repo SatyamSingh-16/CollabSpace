@@ -6,7 +6,7 @@
 set -eu
 dir="$(cd "$(dirname "$0")" && pwd)/secrets/tls"
 mkdir -p "$dir"
-chmod 700 "$dir"
+chmod 755 "$dir"
 cd "$dir"
 umask 077
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 30 \
