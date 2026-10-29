@@ -5,7 +5,8 @@
 set -eu
 dir="$(cd "$(dirname "$0")" && pwd)/secrets"
 mkdir -p "$dir"
-chmod 700 "$dir"
+chmod 755 "$dir"
+mkdir -p "$(dirname "$dir")/acme"
 if [ -e "$dir/db_password" ] || [ -e "$dir/database_url" ]; then
   echo "secrets already exist in $dir; not overwriting" >&2
   exit 1
