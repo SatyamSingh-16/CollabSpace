@@ -3,6 +3,7 @@ services:
     name: collabspace
     runtime: docker
     dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free
     envVars:
       - key: PORT
@@ -13,4 +14,3 @@ services:
         value: https://collabspace-backend-5v2n.onrender.com
       - key: DATABASE_URL
         sync: false
-

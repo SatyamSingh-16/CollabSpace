@@ -1,0 +1,2 @@
+This placeholder file ensures the frontend_dist directory is tracked in git so //go:embed succeeds in all environments.
+

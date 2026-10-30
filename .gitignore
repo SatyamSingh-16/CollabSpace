@@ -26,9 +26,10 @@ node_modules/
 
 # Build output.
 dist/
-server
+/server
 cmd/server/frontend_dist/*
 !cmd/server/frontend_dist/.gitkeep
+!cmd/server/frontend_dist/placeholder.txt
 
 # Test artifacts.
 test-results/
