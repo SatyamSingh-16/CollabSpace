@@ -11,14 +11,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net/http"
 	"regexp"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
@@ -78,20 +81,35 @@ func WriteDecodeError(w http.ResponseWriter, err error) {
 	Error(w, http.StatusBadRequest, "invalid request")
 }
 
-// RequireAllowedOrigin rejects state-changing requests (anything but GET,
-// HEAD and OPTIONS) whose Origin header is present and not allowlisted. It
-// is a second layer of CSRF defence behind SameSite=Lax session cookies.
+// RequireAllowedOrigin handles CORS headers and preflight requests for allowed
+// origins, and rejects state-changing requests (or preflights) from untrusted origins.
+// It sets Access-Control-Allow-Origin to the exact matched origin (never *),
+// Access-Control-Allow-Credentials: true, and handles OPTIONS preflights.
 // Requests without an Origin header come from non-browser clients, which
 // cannot carry a victim's cookies.
 func RequireAllowedOrigin(allowed []string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodGet, http.MethodHead, http.MethodOptions:
-			default:
-				if o := r.Header.Get("Origin"); o != "" && !slices.Contains(allowed, o) {
-					Error(w, http.StatusForbidden, "origin not allowed")
-					return
+			o := r.Header.Get("Origin")
+			if o != "" {
+				if slices.Contains(allowed, o) {
+					w.Header().Set("Access-Control-Allow-Origin", o)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					w.Header().Add("Vary", "Origin")
+					if r.Method == http.MethodOptions {
+						w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+						w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Request-Id")
+						w.Header().Set("Access-Control-Max-Age", "86400")
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+				} else {
+					switch r.Method {
+					case http.MethodGet, http.MethodHead:
+					default:
+						Error(w, http.StatusForbidden, "origin not allowed")
+						return
+					}
 				}
 			}
 			next.ServeHTTP(w, r)
@@ -196,4 +214,34 @@ func Recoverer(log *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// ServeFrontend mounts the Vite production build on the router. Hashed
+// assets in /assets/ are cached forever; everything else falls back to
+// index.html (the SPA entry), never cached. API (/api/), WebSocket (/ws/)
+// and health (/healthz, /readyz) routes registered earlier take priority.
+func ServeFrontend(r chi.Router, frontend fs.FS) {
+	fileServer := http.FileServer(http.FS(frontend))
+	r.Get("/assets/*", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		fileServer.ServeHTTP(w, r)
+	})
+	// theme-init.js, favicon, etc. — exact matches, no cache.
+	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
+		// Try the requested file first; if it doesn't exist, serve
+		// index.html (SPA client-side routing).
+		path := strings.TrimPrefix(req.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		if _, err := fs.Stat(frontend, path); err != nil {
+			req.URL.Path = "/"
+			path = "index.html"
+		}
+		// index.html must never be cached so new builds are picked up.
+		if path == "index.html" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		fileServer.ServeHTTP(w, req)
+	})
 }

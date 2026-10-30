@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: collabspace
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ALLOWED_ORIGINS
+        value: https://collabspace-backend-5v2n.onrender.com
+      - key: DATABASE_URL
+        sync: false
+

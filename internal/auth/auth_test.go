@@ -92,3 +92,23 @@ func TestHashSlotsBoundConcurrentHashing(t *testing.T) {
 		t.Fatal("slot not released after use")
 	}
 }
+
+func TestCookieConfig(t *testing.T) {
+	// 1. Secure without domain uses __Host- prefix
+	c1 := CookieConfig{Secure: true}
+	if c1.Name() != "__Host-collabspace_session" {
+		t.Fatalf("expected __Host-collabspace_session, got %s", c1.Name())
+	}
+
+	// 2. Insecure without domain uses collabspace_session
+	c2 := CookieConfig{Secure: false}
+	if c2.Name() != "collabspace_session" {
+		t.Fatalf("expected collabspace_session, got %s", c2.Name())
+	}
+
+	// 3. Secure with domain does NOT use __Host- prefix (forbade by RFC 6265bis)
+	c3 := CookieConfig{Secure: true, Domain: ".example.com"}
+	if c3.Name() != "collabspace_session" {
+		t.Fatalf("expected collabspace_session with domain, got %s", c3.Name())
+	}
+}

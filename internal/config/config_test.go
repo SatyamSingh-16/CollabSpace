@@ -142,3 +142,31 @@ func TestDatabaseURLFromFile(t *testing.T) {
 		t.Fatalf("missing file: %v", err)
 	}
 }
+
+func TestPortEnvFallback(t *testing.T) {
+	c, err := Load(env(map[string]string{
+		"DATABASE_URL":    "postgres:///x",
+		"ALLOWED_ORIGINS": "https://app.example.com",
+		"PORT":            "10000",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.HTTPAddr != ":10000" {
+		t.Fatalf("expected :10000, got %s", c.HTTPAddr)
+	}
+
+	// HTTP_ADDR takes priority over PORT if both provided
+	c2, err := Load(env(map[string]string{
+		"DATABASE_URL":    "postgres:///x",
+		"ALLOWED_ORIGINS": "https://app.example.com",
+		"PORT":            "10000",
+		"HTTP_ADDR":       "0.0.0.0:8080",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.HTTPAddr != "0.0.0.0:8080" {
+		t.Fatalf("expected 0.0.0.0:8080, got %s", c2.HTTPAddr)
+	}
+}

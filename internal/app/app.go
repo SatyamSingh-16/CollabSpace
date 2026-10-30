@@ -6,6 +6,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -33,10 +34,13 @@ type App struct {
 }
 
 // New builds the application. collabCfg is usually collab.DefaultConfig();
-// its AllowedOrigins is replaced with cfg.AllowedOrigins.
-func New(cfg config.Config, collabCfg collab.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
+// its AllowedOrigins is replaced with cfg.AllowedOrigins. frontendFS, when
+// non-nil, serves the Vite production build (single-origin deployment on
+// Render); when nil, the frontend is served separately (Nginx or Vite dev
+// proxy).
+func New(cfg config.Config, collabCfg collab.Config, pool *pgxpool.Pool, log *slog.Logger, frontendFS ...fs.FS) *App {
 	authSvc := auth.NewService(auth.NewStore(pool), cfg.SessionTTL)
-	cookie := auth.CookieConfig{Secure: cfg.CookieSecure}
+	cookie := auth.CookieConfig{Secure: cfg.CookieSecure, Domain: cfg.CookieDomain}
 	docs := documents.NewStore(pool)
 
 	collabCfg.AllowedOrigins = cfg.AllowedOrigins
@@ -95,6 +99,12 @@ func New(cfg config.Config, collabCfg collab.Config, pool *pgxpool.Pool, log *sl
 	r.With(auth.Middleware(authSvc, cookie, log)).Group(func(r chi.Router) {
 		collab.NewHandler(hub, collabAuthorizer(docs)).Routes(r)
 	})
+
+	// Serve the Vite production build when provided (single-origin
+	// deployment: the Go server on Render serves both API and frontend).
+	if len(frontendFS) > 0 && frontendFS[0] != nil {
+		httpx.ServeFrontend(r, frontendFS[0])
+	}
 
 	a.Router = r
 	return a

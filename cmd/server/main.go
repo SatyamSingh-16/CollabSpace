@@ -2,12 +2,19 @@
 // documents and real-time collaboration over WebSockets.
 //
 // Configuration comes from environment variables; see .env.example.
+//
+// When the frontend/dist directory is present at build time, the production
+// Vite build is embedded and served by the same binary (single-origin
+// deployment on Render). Otherwise the frontend is served separately (Nginx
+// reverse proxy or Vite dev proxy).
 package main
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -23,6 +30,9 @@ import (
 	"collabspace/internal/config"
 	"collabspace/migrations"
 )
+
+//go:embed all:frontend_dist
+var embeddedFrontend embed.FS
 
 func main() {
 	cfg, err := config.Load(os.Getenv)
@@ -69,7 +79,19 @@ func run(cfg config.Config, log *slog.Logger) error {
 		log.Warn("COOKIE_SECURE=false: session cookies will be sent over plain HTTP (local development only)")
 	}
 
-	a := app.New(cfg, collab.DefaultConfig(), pool, log)
+	// Serve the embedded Vite production build (single-origin deployment)
+	// when frontend_dist contains a built index.html. In local development
+	// (go run), frontend_dist contains only .gitkeep and the frontend is served
+	// by Vite's dev server with its proxy.
+	var frontendFS fs.FS
+	if f, err := embeddedFrontend.Open("frontend_dist/index.html"); err == nil {
+		_ = f.Close()
+		sub, _ := fs.Sub(embeddedFrontend, "frontend_dist")
+		frontendFS = sub
+		log.Info("serving embedded frontend")
+	}
+
+	a := app.New(cfg, collab.DefaultConfig(), pool, log, frontendFS)
 	go a.RunSessionJanitor(ctx, time.Hour, log) // stops when ctx is cancelled
 	go logStats(ctx, a, cfg.StatsLogInterval, log)
 	srv := &http.Server{

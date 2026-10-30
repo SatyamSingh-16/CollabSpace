@@ -15,19 +15,21 @@ import (
 
 // CookieConfig controls the session cookie's attributes. Secure must be
 // true in production; it is configurable only so plain-HTTP localhost
-// development works.
+// development works. Domain is optional (e.g. for sharing cookies across
+// subdomains under a custom domain).
 type CookieConfig struct {
 	Secure bool
+	Domain string
 }
 
-// Name is the session cookie's name. With Secure it carries the __Host-
-// prefix: browsers then accept the cookie only if it is Secure, has Path=/
-// and no Domain, so a sibling subdomain cannot plant ("toss") a cookie of
-// the same name and log the victim into the attacker's account. Browsers
-// refuse __Host- cookies without Secure, so plain-HTTP development uses the
-// unprefixed name.
+// Name is the session cookie's name. With Secure and without a Domain it
+// carries the __Host- prefix: browsers then accept the cookie only if it is
+// Secure, has Path=/ and no Domain, so a sibling subdomain cannot plant
+// ("toss") a cookie of the same name and log the victim into the attacker's
+// account. Browsers refuse __Host- cookies without Secure or with a Domain,
+// so those cases use the unprefixed name.
 func (c CookieConfig) Name() string {
-	if c.Secure {
+	if c.Secure && c.Domain == "" {
 		return "__Host-collabspace_session"
 	}
 	return "collabspace_session"
@@ -38,18 +40,18 @@ func (c CookieConfig) set(w http.ResponseWriter, s Session, now time.Time) {
 		Name:     c.Name(),
 		Value:    s.Token,
 		Path:     "/",       // API and WebSocket both need it
+		Domain:   c.Domain,
 		Expires:  s.Expires, // same lifetime as the server-side session
 		MaxAge:   int(s.Expires.Sub(now).Seconds()),
 		HttpOnly: true,                 // not readable by JavaScript (XSS can't steal it)
 		Secure:   c.Secure,             // HTTPS only
 		SameSite: http.SameSiteLaxMode, // not sent on cross-site POSTs or sub-requests
-		// No Domain: a host-only cookie, never shared with subdomains.
 	})
 }
 
 func (c CookieConfig) clear(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name: c.Name(), Value: "", Path: "/", MaxAge: -1,
+		Name: c.Name(), Value: "", Path: "/", Domain: c.Domain, MaxAge: -1,
 		HttpOnly: true, Secure: c.Secure, SameSite: http.SameSiteLaxMode,
 	})
 }

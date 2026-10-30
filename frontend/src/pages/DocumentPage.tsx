@@ -2,7 +2,7 @@ import { EditorContent, useEditor } from '@tiptap/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from 'react'
 import * as Y from 'yjs'
 
-import { api, ApiError, type DocumentMeta, type Member, type Role, type User } from '../api'
+import { api, ApiError, wsUrl, type DocumentMeta, type Member, type Role, type User } from '../api'
 import { bindEditable, canEdit, collabExtensions } from '../collab/editor'
 import { pageClass, pageGeometry, usePageSettings } from '../collab/pageSettings'
 import { createPagination, PAGE_GAP } from '../collab/pagination'
@@ -21,11 +21,6 @@ import { StatusPill } from '../ui/StatusPill'
 import { Toolbar } from '../ui/Toolbar'
 
 const roleLabel: Record<Role, string> = { owner: 'Owner', editor: 'Can edit', viewer: 'Can view' }
-
-function wsUrl(documentId: string): string {
-  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${scheme}://${location.host}/ws/documents/${documentId}`
-}
 
 // --- one document ---
 

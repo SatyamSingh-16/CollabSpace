@@ -26,6 +26,9 @@ node_modules/
 
 # Build output.
 dist/
+server
+cmd/server/frontend_dist/*
+!cmd/server/frontend_dist/.gitkeep
 
 # Test artifacts.
 test-results/

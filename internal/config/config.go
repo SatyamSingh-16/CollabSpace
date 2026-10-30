@@ -21,6 +21,7 @@ type Config struct {
 	HTTPAddr       string
 	AllowedOrigins []string // exact browser origins, e.g. https://app.example.com
 	CookieSecure   bool     // false only for local plain-HTTP development
+	CookieDomain   string   // optional domain for session cookies (e.g. .example.com)
 	SessionTTL     time.Duration
 	MigrateOnStart bool
 	LogLevel       slog.Level
@@ -87,9 +88,19 @@ func Load(getenv func(string) string) (Config, error) {
 		return r
 	}
 
+	httpAddr := get("HTTP_ADDR", "")
+	if httpAddr == "" {
+		if port := get("PORT", ""); port != "" {
+			httpAddr = ":" + port
+		} else {
+			httpAddr = "127.0.0.1:8080"
+		}
+	}
+
 	c := Config{
-		HTTPAddr:       get("HTTP_ADDR", "127.0.0.1:8080"),
+		HTTPAddr:       httpAddr,
 		CookieSecure:   boolean("COOKIE_SECURE", true), // secure unless explicitly disabled
+		CookieDomain:   get("COOKIE_DOMAIN", ""),
 		SessionTTL:     duration("SESSION_TTL", 7*24*time.Hour),
 		MigrateOnStart: boolean("MIGRATE_ON_START", true),
 		LogFormat:      get("LOG_FORMAT", "json"),

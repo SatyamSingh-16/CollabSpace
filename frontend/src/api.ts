@@ -1,6 +1,30 @@
-// Typed client for the CollabSpace REST API. Requests are same-origin (the
-// Vite dev server or Nginx proxies /api), so the HttpOnly session cookie is
-// sent automatically; the token is never visible to JavaScript.
+// Typed client for the CollabSpace REST API. In production the Go server
+// serves both the API and the frontend (single-origin deployment on Render),
+// so relative paths and same-origin cookies work out of the box. When
+// VITE_API_BASE_URL is set (e.g. during a transition to a split-host setup
+// with a custom domain), requests are sent there with credentials: 'include'.
+
+/** Base URL for API requests. Empty string = same origin (production default). */
+export const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/+$/, '') ?? ''
+
+/** credentials policy: 'include' for cross-origin, 'same-origin' otherwise. */
+const CREDENTIALS: RequestCredentials = API_BASE ? 'include' : 'same-origin'
+
+/**
+ * Construct the WebSocket URL for a document.
+ * If VITE_API_BASE_URL is configured, converts https:// -> wss:// and http:// -> ws://.
+ * Otherwise falls back to location.origin with the appropriate ws(s) scheme.
+ */
+export function wsUrl(documentId: string, apiBase: string = API_BASE): string {
+  if (apiBase) {
+    const url = new URL(apiBase, typeof window !== 'undefined' ? window.location.href : 'http://localhost')
+    const scheme = url.protocol === 'https:' ? 'wss' : 'ws'
+    return `${scheme}://${url.host}/ws/documents/${documentId}`
+  }
+  const scheme = typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws'
+  const host = typeof location !== 'undefined' ? location.host : 'localhost:5173'
+  return `${scheme}://${host}/ws/documents/${documentId}`
+}
 
 export interface User {
   id: string
@@ -38,9 +62,9 @@ export class ApiError extends Error {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
-    credentials: 'same-origin',
+    credentials: CREDENTIALS,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
